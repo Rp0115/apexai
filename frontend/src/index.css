@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+:root {
+  --ink: #12141a;
+  --paper: #f3f1ec;
+  --signal: #e10600;
+  --carbon: #2a2e37;
+  --mist: #d8d4cc;
+  --line: #b8b3a8;
+  --ok: #0f7a4a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  font-family: "IBM Plex Sans", sans-serif;
+  background:
+    radial-gradient(ellipse 80% 50% at 10% -10%, rgba(225, 6, 0, 0.12), transparent 55%),
+    radial-gradient(ellipse 60% 40% at 90% 0%, rgba(42, 46, 55, 0.08), transparent 50%),
+    linear-gradient(180deg, #f7f5f0 0%, var(--paper) 40%, #ebe7df 100%);
+  background-attachment: fixed;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: repeating-linear-gradient(
+    -12deg,
+    #000 0 1px,
+    transparent 1px 10px
+  );
+}
+
+.display {
+  font-family: "Barlow Condensed", sans-serif;
+  letter-spacing: 0.02em;
+}
+
+@keyframes radioIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulseLine {
+  0%,
+  100% {
+    transform: scaleX(0.35);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+.radio-enter {
+  animation: radioIn 0.45s ease-out both;
+}
+
+.live-bar {
+  transform-origin: left center;
+  animation: pulseLine 1.4s ease-in-out infinite;
+}

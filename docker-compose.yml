@@ -1,0 +1,46 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: apex-db
+    environment:
+      POSTGRES_DB: apexai
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: f1password
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/init-pgvector.sql:/docker-entrypoint-initdb.d/01-pgvector.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d apexai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: .
+    container_name: apex-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DOCKER_COMPOSE_ENABLED: "false"
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/apexai
+      SPRING_DATASOURCE_USERNAME: admin
+      SPRING_DATASOURCE_PASSWORD: f1password
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      APEXAI_AI_ENABLED: ${APEXAI_AI_ENABLED:-false}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build: ./frontend
+    container_name: apex-frontend
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+
+volumes:
+  pgdata:
