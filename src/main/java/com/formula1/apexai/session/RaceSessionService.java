@@ -8,6 +8,7 @@ import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -180,38 +181,109 @@ public class RaceSessionService {
 		return fetchSessions(year).stream()
 				.filter(s -> s.sessionKey() != null)
 				.filter(s -> sessionNameMatches(s, "Race"))
+				.filter(s -> !Boolean.TRUE.equals(s.isCancelled()))
 				.sorted(Comparator.comparing(OpenF1SessionDto::dateStart, Comparator.nullsLast(String::compareTo)))
 				.toList();
 	}
 
+	/** Latest non-cancelled main Race of a season (for championship standings). */
+	public Optional<OpenF1SessionDto> lastMainRaceOfYear(int year) {
+		List<OpenF1SessionDto> races = listRaces(year);
+		if (races.isEmpty()) {
+			return Optional.empty();
+		}
+		return Optional.of(races.getLast());
+	}
+
 	/**
-	 * Resolve which race the user means. Falls back to the configured default (Japan).
+	 * Resolve which race the user means.
+	 * Does <strong>not</strong> silently fall back to Japan when a race/year was named
+	 * but that session type (e.g. Sprint) does not exist.
 	 */
-	public SessionContext.ActiveSession resolveFromQuestion(String question) {
-		int year = extractYear(question).orElse(2023);
+	public SessionResolution resolveDetailed(String question) {
+		Optional<Integer> explicitYear = extractYear(question);
+		int year = explicitYear.orElse(2023);
+
+		if (ChampionshipService.looksLikeChampionshipQuestion(question)) {
+			Optional<OpenF1SessionDto> finale = lastMainRaceOfYear(year);
+			if (finale.isPresent()) {
+				log.info("Championship question for {} → session {}", year, finale.get().displayLabel());
+				return SessionResolution.ok(toActive(finale.get()));
+			}
+			return SessionResolution.notFound(
+					"No championship Race sessions found for " + year + " in OpenF1.");
+		}
+
 		Optional<String> raceHint = extractRaceHint(question);
 		String sessionName = extractSessionName(question);
 
+		// "latest sprint" / "most recent race" with no venue → newest matching session in OpenF1
+		if (raceHint.isEmpty() && looksLikeLatest(question)) {
+			Optional<OpenF1SessionDto> latest = findLatestSession(
+					sessionName, explicitYear.orElse(null));
+			if (latest.isPresent()) {
+				log.info("Resolved latest {} → {}", sessionName, latest.get().displayLabel());
+				return SessionResolution.ok(toActive(latest.get()));
+			}
+			return SessionResolution.notFound(
+					"No " + sessionName + " sessions found in OpenF1 yet (coverage is 2023+).");
+		}
+
 		if (raceHint.isEmpty()) {
-			return defaultSession();
+			return SessionResolution.ok(defaultSession());
 		}
 
 		String hint = raceHint.get();
 		List<OpenF1SessionDto> sessions = fetchSessions(year);
 		String wantedSession = sessionName;
 
-		// Venue-specific hint (barcelona, madrid, miami, …) always wins over country
+		Optional<OpenF1SessionDto> match = findMatchingSession(sessions, hint, wantedSession, question);
+		if (match.isPresent()) {
+			log.info("Resolved '{}' ({}) → {}", hint, wantedSession, match.get().displayLabel());
+			return SessionResolution.ok(toActive(match.get()));
+		}
+
+		// Sprint asked but this weekend has no Sprint — explain, don't jump to Japan
+		if ("Sprint".equalsIgnoreCase(wantedSession)) {
+			Optional<OpenF1SessionDto> mainRace = findMatchingSession(sessions, hint, "Race", question);
+			if (mainRace.isPresent()) {
+				return SessionResolution.notFound(String.format(
+						"%s %d did not have a Sprint weekend in OpenF1 (standard GP only: %s). "
+								+ "Ask about the Race instead, e.g. \"Who won Austria %d?\".",
+						countryOrVenueLabel(hint), year, mainRace.get().displayLabel(), year));
+			}
+			return SessionResolution.notFound(String.format(
+					"No Sprint session found for %s %d in OpenF1.", countryOrVenueLabel(hint), year));
+		}
+
+		return SessionResolution.notFound(String.format(
+				"No %s session found for %s %d in OpenF1 (coverage is 2023+).",
+				wantedSession, countryOrVenueLabel(hint), year));
+	}
+
+	/** @deprecated prefer {@link #resolveDetailed(String)} */
+	public SessionContext.ActiveSession resolveFromQuestion(String question) {
+		SessionResolution resolution = resolveDetailed(question);
+		if (resolution.resolved()) {
+			return resolution.session();
+		}
+		return defaultSession();
+	}
+
+	private Optional<OpenF1SessionDto> findMatchingSession(
+			List<OpenF1SessionDto> sessions,
+			String hint,
+			String wantedSession,
+			String question) {
+
 		if (VENUE_ALIASES.containsKey(hint)) {
 			Optional<OpenF1SessionDto> venue = bestByScore(
 					sessions, wantedSession, VENUE_ALIASES.get(hint), true);
 			if (venue.isPresent()) {
-				log.info("Resolved venue hint '{}' → {}", hint, venue.get().displayLabel());
-				return toActive(venue.get());
+				return venue;
 			}
 		}
 
-		// Country hint — if multiple GPs in that country, prefer the one whose
-		// circuit/location also appears in the question; else earliest race.
 		if (COUNTRY_ALIASES.containsKey(hint)) {
 			String country = COUNTRY_ALIASES.get(hint);
 			List<OpenF1SessionDto> countryRaces = sessions.stream()
@@ -222,7 +294,7 @@ public class RaceSessionService {
 					.toList();
 
 			if (countryRaces.size() == 1) {
-				return toActive(countryRaces.getFirst());
+				return Optional.of(countryRaces.getFirst());
 			}
 			if (countryRaces.size() > 1) {
 				String q = question.toLowerCase(Locale.ROOT);
@@ -230,28 +302,72 @@ public class RaceSessionService {
 						.filter(s -> venueMentionedInQuestion(s, q))
 						.findFirst();
 				if (disambiguated.isPresent()) {
-					log.info("Disambiguated {} → {}", country, disambiguated.get().displayLabel());
-					return toActive(disambiguated.get());
+					return disambiguated;
 				}
-				// Ambiguous "Spain 2026" with no venue — use earliest and label clearly
-				OpenF1SessionDto first = countryRaces.getFirst();
-				log.warn("Ambiguous country '{}' ({} races); using earliest: {}",
-						country, countryRaces.size(), first.displayLabel());
-				return toActive(first);
+				return Optional.of(countryRaces.getFirst());
 			}
 		}
 
-		// Raw needle search (circuit/location/country substring)
 		Optional<OpenF1SessionDto> found = bestByScore(sessions, wantedSession, List.of(hint), true);
 		if (found.isPresent()) {
-			return toActive(found.get());
+			return found;
 		}
-		found = bestByScore(sessions, wantedSession, List.of(hint), false);
-		if (found.isPresent()) {
-			return toActive(found.get());
-		}
+		return bestByScore(sessions, wantedSession, List.of(hint), false);
+	}
 
-		return defaultSession();
+	private String countryOrVenueLabel(String hint) {
+		if (COUNTRY_ALIASES.containsKey(hint)) {
+			return COUNTRY_ALIASES.get(hint);
+		}
+		return Character.toUpperCase(hint.charAt(0)) + hint.substring(1);
+	}
+
+	private boolean looksLikeLatest(String question) {
+		String q = question.toLowerCase(Locale.ROOT);
+		return q.contains("latest")
+				|| q.contains("most recent")
+				|| q.matches(".*\\blast\\s+(sprint|race|gp|grand prix)\\b.*");
+	}
+
+	/**
+	 * Newest non-cancelled session of the given type that has already started
+	 * (so "latest sprint" does not pick a future calendar entry).
+	 */
+	private Optional<OpenF1SessionDto> findLatestSession(String wantedSession, Integer yearFilter) {
+		int fromYear = yearFilter != null ? yearFilter : java.time.Year.now(java.time.ZoneOffset.UTC).getValue();
+		int toYear = yearFilter != null ? yearFilter : 2023;
+		Instant now = Instant.now();
+
+		OpenF1SessionDto best = null;
+		Instant bestStart = null;
+		for (int y = fromYear; y >= toYear; y--) {
+			for (OpenF1SessionDto s : fetchSessions(y)) {
+				if (s.sessionKey() == null || !sessionNameMatches(s, wantedSession)) {
+					continue;
+				}
+				if (Boolean.TRUE.equals(s.isCancelled()) || s.dateStart() == null) {
+					continue;
+				}
+				Instant start;
+				try {
+					start = Instant.parse(s.dateStart());
+				} catch (Exception ex) {
+					continue;
+				}
+				if (start.isAfter(now)) {
+					continue;
+				}
+				if (best == null || start.isAfter(bestStart)) {
+					best = s;
+					bestStart = start;
+				}
+			}
+			// Once we have a hit in a newer year, older years cannot be later
+			if (yearFilter == null && best != null && y < fromYear) {
+				break;
+			}
+		}
+		return Optional.ofNullable(best);
 	}
 
 	public boolean isIngested(int sessionKey) {
@@ -269,12 +385,15 @@ public class RaceSessionService {
 	}
 
 	public SessionContext.ActiveSession toActive(OpenF1SessionDto dto) {
+		// Prefer session_name in the type slot used for display ("Race" vs "Sprint").
+		// OpenF1 sets session_type=Race for Sprints, which is misleading in the UI.
+		String kind = dto.sessionName() != null ? dto.sessionName() : dto.sessionType();
 		return new SessionContext.ActiveSession(
 				dto.sessionKey(),
 				dto.meetingKey() != null ? dto.meetingKey() : 0,
 				dto.year() != null ? dto.year() : 2023,
 				dto.sessionName(),
-				dto.sessionType(),
+				kind,
 				dto.countryName(),
 				dto.circuitShortName(),
 				dto.displayLabel());
@@ -295,8 +414,17 @@ public class RaceSessionService {
 		keys.addAll(COUNTRY_ALIASES.keySet());
 		return keys.stream()
 				.sorted(Comparator.comparingInt(String::length).reversed())
-				.filter(q::contains)
+				.filter(key -> hintMatches(q, key))
 				.findFirst();
+	}
+
+	/** Avoid "spa" matching inside "sprint". */
+	private boolean hintMatches(String questionLower, String key) {
+		if (key.length() <= 3) {
+			return Pattern.compile("\\b" + Pattern.quote(key) + "\\b", Pattern.CASE_INSENSITIVE)
+					.matcher(questionLower).find();
+		}
+		return questionLower.contains(key);
 	}
 
 	private List<OpenF1SessionDto> fetchSessions(int year) {
@@ -360,11 +488,15 @@ public class RaceSessionService {
 
 	private String extractSessionName(String question) {
 		String q = question.toLowerCase(Locale.ROOT);
-		if (q.contains("qualifying") || q.contains(" quali")) {
-			return "Qualifying";
+		// Sprint must be explicit ("Belgium sprint 2023"). "Belgium GP" → main Race.
+		if (q.contains("sprint quali") || q.contains("sprint qualifying")) {
+			return "Sprint Qualifying";
 		}
 		if (q.contains("sprint")) {
 			return "Sprint";
+		}
+		if (q.contains("qualifying") || q.contains("qualify") || q.contains(" quali") || q.contains("pole")) {
+			return "Qualifying";
 		}
 		if (q.contains("practice 3") || q.contains("fp3")) {
 			return "Practice 3";
@@ -378,11 +510,37 @@ public class RaceSessionService {
 		return "Race";
 	}
 
+	/**
+	 * OpenF1 marks Sprint as {@code session_type=Race} with {@code session_name=Sprint}.
+	 * For the main GP we must match {@code session_name} exactly — never fall back to type alone.
+	 */
 	private boolean sessionNameMatches(OpenF1SessionDto s, String wanted) {
 		if (wanted.equalsIgnoreCase("Race")) {
-			return "Race".equalsIgnoreCase(s.sessionName()) || "Race".equalsIgnoreCase(s.sessionType());
+			return isMainRace(s);
 		}
-		return wanted.equalsIgnoreCase(s.sessionName()) || wanted.equalsIgnoreCase(s.sessionType());
+		if (wanted.equalsIgnoreCase("Sprint")) {
+			return isSprintRace(s);
+		}
+		if (wanted.equalsIgnoreCase("Qualifying")) {
+			// Exact name — do not match Sprint Qualifying via session_type
+			return "Qualifying".equalsIgnoreCase(s.sessionName());
+		}
+		if (wanted.equalsIgnoreCase("Sprint Qualifying")) {
+			return "Sprint Qualifying".equalsIgnoreCase(s.sessionName());
+		}
+		return wanted.equalsIgnoreCase(s.sessionName())
+				|| wanted.equalsIgnoreCase(s.sessionType());
+	}
+
+	/** Sunday GP only — excludes Sprint / Sprint Qualifying. */
+	private boolean isMainRace(OpenF1SessionDto s) {
+		return s != null
+				&& "Race".equalsIgnoreCase(s.sessionName())
+				&& !Boolean.TRUE.equals(s.isCancelled());
+	}
+
+	private boolean isSprintRace(OpenF1SessionDto s) {
+		return s != null && "Sprint".equalsIgnoreCase(s.sessionName());
 	}
 
 	private boolean contains(String value, String needle) {

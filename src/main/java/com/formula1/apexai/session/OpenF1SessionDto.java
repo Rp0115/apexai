@@ -11,7 +11,8 @@ public record OpenF1SessionDto(
 		@JsonProperty("circuit_short_name") String circuitShortName,
 		@JsonProperty("location") String location,
 		@JsonProperty("year") Integer year,
-		@JsonProperty("date_start") String dateStart
+		@JsonProperty("date_start") String dateStart,
+		@JsonProperty("is_cancelled") Boolean isCancelled
 ) {
 	public String displayLabel() {
 		String circuit = circuitShortName != null ? circuitShortName : location;

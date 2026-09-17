@@ -4,6 +4,11 @@ High-performance F1 analytics over **any OpenF1 race** (defaults to 2023 Japan):
 
 Ask the Oracle — it resolves the race from your prompt, loads OpenF1 data if needed, answers directly over race radio, and updates the Session Brief for the active race.
 
+## Why I Built This?
+
+As an F1 fan, I am always looking back at past race weekends to analyze driver pace, compare stint strategies, and review historical timing stats. Most official archives provide static results tables, making it difficult to visualize how a previous Grand Prix actually unfolded.
+I built **ApexAI** to turn historical Formula 1 session archives into an interactive analytics tool, allowing users to easily pull speed traces, review past lap times, and query completed races through natural language without combing through raw timing logs.
+
 ## Data source — OpenF1
 
 Telemetry comes from the public **[OpenF1 API](https://openf1.org/)** (`https://api.openf1.org/v1`). ApexAI resolves meetings/sessions, then pulls drivers, laps, session results, and related timing for the active `session_key`.
@@ -15,26 +20,29 @@ Telemetry comes from the public **[OpenF1 API](https://openf1.org/)** (`https://
 Name the race (and year when it matters; **2023+ only**). Venue beats country when a country has multiple GPs (e.g. Barcelona vs Madrid; Miami / Austin / Las Vegas).
 
 
-| Ask about                    | Example prompts                                                                                          |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------- |
-| **Race winner**              | Who won Monaco 2023? · Who won Vegas 2025? · Who won Barcelona 2026?                                     |
-| **Podium**                   | What was the podium at Silverstone 2023?                                                                 |
-| **Fastest lap**              | Who had the fastest lap at Spa 2023? · Fastest lap Suzuka 2023                                           |
-| **Sector times**             | Fastest S1 at Monza 2023? · Fastest S2 at Silverstone 2023? · Fastest S3 Miami 2023                      |
-| **Driver performance**       | How did Hamilton perform in Belgium 2023? · Norris summary Austin 2023                                   |
-| **Speed / lap trace**        | Show me a speed trace for Verstappen lap 15 at Suzuka 2023 · Speed trace for Antonelli lap 3 Madrid 2026 |
-| **Session brief / overview** | Session brief for Japan 2023 · Give me an overview of Monaco 2023                                        |
-| **Stewards / FIA**           | Any steward penalties at Japan 2023? · Track limits incidents Suzuka                                     |
+| Ask about                    | Example prompts                                                                                                 |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| **Race winner**              | Who won Monaco 2023? · Who won Vegas 2025? · Who won Barcelona 2026?                                            |
+| **Podium**                   | What was the podium at Silverstone 2024?                                                                        |
+| **Qualifying**               | Which position did Hamilton qualify in Suzuka 2023? · Who took pole at Monaco 2024? · Qualifying order Spa 2024 |
+| **Fastest lap**              | Who had the fastest lap at Spa 2024? · Fastest lap Suzuka 2023                                                  |
+| **Sector times**             | Fastest S1 at Monza 2025? · Fastest S2 at Silverstone 2024? · Fastest S3 Miami 2023                             |
+| **Driver performance**       | How did Hamilton perform in Belgium 2023? · Norris summary Austin 2025                                          |
+| **Speed / lap trace**        | Show me a speed trace for Verstappen lap 15 at Suzuka 2023 · Speed trace for Antonelli lap 3 Madrid 2026        |
+| **Championships**            | Who won the 2025 drivers and constructors championships? · 2024 WDC · Who won the 2023 constructors title?      |
+| **Session brief / overview** | Session brief for Japan 2023 · Give me an overview of Monaco 2023                                               |
+| **Stewards / FIA**           | Any steward penalties at Japan 2024? · Track limits incidents Suzuka                                            |
 
 
 Tips:
 
 - Race data is **2023 and later only** (OpenF1 limitation).
 - Prefer venue names for multi-GP countries: **Barcelona / Madrid**, **Miami / Austin / Las Vegas** (not just “Spain” or “USA”).
+- **Sprint vs main race:** asking about a GP (e.g. Belgium 2023) uses the Sunday **Race**. Say “sprint” explicitly for the Sprint (e.g. Belgium sprint 2023). If that weekend had no Sprint in OpenF1, ApexAI says so instead of guessing another race.
+- **Qualifying:** ask “qualify”, “qualifying”, or “pole” to load the Qualifying session (not the Race). Named drivers get their grid position (e.g. Hamilton P7 at Suzuka 2023).
+- **Championships:** drivers’ / constructors’ titles use OpenF1 standings after the **latest Race** of that year (season champions when the finale is in; otherwise current leaders).
 - Speed traces need a **driver** and ideally a **lap number**; the chart appears under race radio.
 - The full timing dump (winner, podium, fastest lap, sectors, speed trap) lives in **Session Brief**, not in every short answer.
-
-
 
 ## Architecture
 
@@ -49,19 +57,13 @@ Tips:
 | **Batch**             | Manual ingest for any session (`/api/batch/ingest`)           |
 
 
-
-
 ## Quick start (local)
-
-
 
 ### 1. Database
 
 ```bash
 docker compose -f compose.yaml up -d
 ```
-
-
 
 ### 2. Backend
 
@@ -107,8 +109,6 @@ Invoke-RestMethod "http://localhost:8080/api/batch/races?year=2023" | Format-Tab
 curl.exe -X POST "http://localhost:8080/api/batch/ingest?year=2023&race=Belgium"
 ```
 
-
-
 ### 4. Frontend
 
 ```bash
@@ -128,8 +128,6 @@ docker compose -f docker-compose.yml up --build
 - UI: [http://localhost:3000](http://localhost:3000)
 - API: [http://localhost:8080](http://localhost:8080)
 
-
-
 ## Key endpoints
 
 - `GET /api/health` — gateway map
@@ -139,8 +137,6 @@ docker compose -f docker-compose.yml up --build
 - `GET /api/telemetry/stats?sessionKey=9173` — session brief summary
 - `GET /api/telemetry/speed-trace?driverNumber=1&lapNumber=10&sessionKey=9173`
 - `GET /actuator/metrics/apexai.ai.latency` — AI latency
-
-
 
 ## AI profile notes
 

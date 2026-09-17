@@ -19,5 +19,7 @@ public class Driver {
 	private String lastName;
 	private String nameAcronym;
 	private String teamName;
+	@Column(length = 512)
+	private String headshotUrl;
 	private Integer sessionKey;
 }

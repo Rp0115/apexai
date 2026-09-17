@@ -12,12 +12,16 @@ import {
 const API = import.meta.env.VITE_API_BASE || ''
 
 const PROMPTS = [
-  'Who won Monaco 2023?',
-  'Who won Miami 2023?',
-  'Who won Las Vegas 2023?',
-  'Fastest S2 at Austin 2023?',
-  'How did Hamilton perform in Belgium 2023?',
-  'Show me a speed trace for Verstappen lap 15 at Suzuka 2023',
+  { label: 'Race winner', text: 'Who won Vegas 2025?' },
+  { label: 'Podium', text: 'What was the podium at Silverstone 2024?' },
+  { label: 'Qualifying', text: 'Which position did Hamilton qualify in Suzuka 2023?' },
+  { label: 'Fastest lap', text: 'Who had the fastest lap at Spa 2024?' },
+  { label: 'Sector times', text: 'Fastest S2 at Monza 2025?' },
+  { label: 'Driver performance', text: 'How did Norris perform in Austin 2025?' },
+  { label: 'Speed / lap trace', text: 'Speed trace for Antonelli lap 3 Madrid 2026' },
+  { label: 'Championships', text: 'Who won the 2025 drivers and constructors championships?' },
+  { label: 'Session brief', text: 'Session brief for Barcelona 2026' },
+  { label: 'Stewards / FIA', text: 'Any steward penalties at Japan 2024?' },
 ]
 
 async function askOracle(previous, formData) {
@@ -39,6 +43,7 @@ async function askOracle(previous, formData) {
   let buffer = ''
   let answer = ''
   let speedTrace = null
+  let podium = null
   let session = null
   let eventName = 'message'
 
@@ -64,6 +69,12 @@ async function askOracle(previous, formData) {
           } catch {
             speedTrace = null
           }
+        } else if (eventName === 'podium') {
+          try {
+            podium = JSON.parse(data.trim())
+          } catch {
+            podium = null
+          }
         } else if (eventName === 'session') {
           try {
             session = JSON.parse(data.trim())
@@ -72,14 +83,59 @@ async function askOracle(previous, formData) {
             session = null
           }
         } else if (eventName === 'error') {
-          return { question, answer, error: data.trim(), speedTrace, session }
+          return { question, answer, error: data.trim(), speedTrace, podium, session }
         }
         eventName = 'message'
       }
     }
   }
 
-  return { question, answer, error: null, speedTrace, session }
+  return { question, answer, error: null, speedTrace, podium, session }
+}
+
+function PodiumStand({ podium }) {
+  if (!podium?.entries?.length) return null
+
+  const byPos = Object.fromEntries(podium.entries.map((e) => [e.position, e]))
+  const order = [byPos[2], byPos[1], byPos[3]].filter(Boolean)
+  const heights = { 1: 'h-36', 2: 'h-28', 3: 'h-24' }
+
+  return (
+    <section className="radio-enter mt-8 border-t border-[var(--line)] pt-6">
+      <p className="display text-sm uppercase tracking-[0.18em] text-[var(--signal)]">Podium</p>
+      <h2 className="display mt-1 text-2xl font-bold leading-none sm:text-3xl">{podium.label}</h2>
+      <div className="mt-8 flex items-end justify-center gap-3 sm:gap-6">
+        {order.map((entry) => (
+          <div key={entry.position} className="flex w-28 flex-col items-center sm:w-36">
+            <div className="mb-3 flex h-24 w-24 items-end justify-center overflow-hidden sm:h-28 sm:w-28">
+              {entry.headshotUrl ? (
+                <img
+                  src={entry.headshotUrl}
+                  alt={entry.broadcastName}
+                  className="max-h-full max-w-full object-contain"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center bg-[var(--mist)] text-2xl font-bold text-[var(--carbon)]/40">
+                  {entry.position}
+                </div>
+              )}
+            </div>
+            <p className="display text-center text-xs font-bold uppercase tracking-[0.14em] text-[var(--signal)]">
+              P{entry.position}
+            </p>
+            <p className="mt-1 text-center text-sm font-semibold text-[var(--ink)]">{entry.broadcastName}</p>
+            {entry.teamName && (
+              <p className="mt-0.5 text-center text-xs text-[var(--carbon)]/60">{entry.teamName}</p>
+            )}
+            <div
+              className={`mt-3 w-full border border-[var(--line)] bg-[var(--mist)] ${heights[entry.position] || 'h-20'}`}
+            />
+          </div>
+        ))}
+      </div>
+    </section>
+  )
 }
 
 function SpeedTraceChart({ driverNumber, lapNumber, sessionKey }) {
@@ -176,7 +232,7 @@ export default function App() {
         },
         formData,
       ),
-    { question: '', answer: '', error: null, speedTrace: null, session: null },
+    { question: '', answer: '', error: null, speedTrace: null, podium: null, session: null },
   )
 
   const [optimisticAnswer, setOptimisticAnswer] = useOptimistic(
@@ -256,7 +312,7 @@ export default function App() {
         >
           <input
             name="question"
-            placeholder="e.g. Who won Miami 2023? Who won Barcelona 2026?"
+            placeholder="e.g. Who won Vegas 2025? Who won Barcelona 2026?"
             className="min-w-0 flex-1 border border-[var(--line)] bg-white/70 px-4 py-3 text-base outline-none ring-[var(--signal)] placeholder:text-[var(--carbon)]/40 focus:ring-2"
             disabled={pending}
           />
@@ -272,12 +328,17 @@ export default function App() {
         <div className="mt-4 flex flex-wrap gap-2">
           {PROMPTS.map((p) => (
             <button
-              key={p}
+              key={p.label}
               type="button"
-              onClick={() => submitPrompt(p)}
-              className="border border-[var(--line)] bg-white/50 px-3 py-1.5 text-left text-sm text-[var(--carbon)] transition hover:border-[var(--signal)] hover:text-[var(--signal)]"
+              onClick={() => submitPrompt(p.text)}
+              className="group cursor-pointer border border-[var(--line)] bg-white/50 px-3 py-2 text-left transition hover:border-[var(--signal)] hover:bg-[var(--signal)]/5 hover:shadow-[inset_3px_0_0_var(--signal)] active:scale-[0.98]"
             >
-              {p}
+              <span className="display block text-[10px] font-medium uppercase tracking-[0.16em] text-[var(--carbon)]/50 transition group-hover:text-[var(--signal)]">
+                {p.label}
+              </span>
+              <span className="mt-0.5 block text-sm text-[var(--carbon)] transition group-hover:text-[var(--ink)]">
+                {p.text}
+              </span>
             </button>
           ))}
         </div>
@@ -299,6 +360,8 @@ export default function App() {
             Active session: <span className="text-[var(--ink)]">{briefLabel}</span>
           </p>
         )}
+
+        {state.podium && <PodiumStand podium={state.podium} />}
 
         {state.speedTrace && (
           <SpeedTraceChart

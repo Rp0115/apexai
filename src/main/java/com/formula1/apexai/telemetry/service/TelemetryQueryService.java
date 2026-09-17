@@ -2,6 +2,8 @@ package com.formula1.apexai.telemetry.service;
 
 import com.formula1.apexai.config.OpenF1Properties;
 import com.formula1.apexai.session.SessionContext;
+import com.formula1.apexai.telemetry.dto.DriverDTO;
+import com.formula1.apexai.telemetry.dto.PodiumResponse;
 import com.formula1.apexai.telemetry.dto.SessionResultDTO;
 import com.formula1.apexai.telemetry.dto.SpeedTraceResponse;
 import com.formula1.apexai.telemetry.model.Driver;
@@ -116,13 +118,63 @@ public class TelemetryQueryService {
 				nz(best.getSpeedTrap())).trim();
 	}
 
+	/** Short qualifying answer — driver position, pole, or top of the order. */
+	public String qualifyingSummary(String driverHint) {
+		ensureRaceResultsLoaded();
+		int sessionKey = activeSessionKey();
+		String label = activeSessionLabel();
+
+		if (driverHint != null && !driverHint.isBlank()) {
+			Optional<Integer> number = resolveDriverNumber(driverHint);
+			if (number.isEmpty()) {
+				return "Could not resolve driver '" + driverHint + "' for qualifying.";
+			}
+			return raceResultRepository.findBySessionKeyAndDriverNumber(sessionKey, number.get())
+					.map(r -> {
+						String name = driverDisplayName(r.getDriverNumber());
+						Integer pos = r.getFinishPosition();
+						if (pos == null) {
+							return name + " has no qualifying classification for " + label + ".";
+						}
+						return String.format(Locale.US,
+								"%s qualified P%d at %s.",
+								name, pos, label);
+					})
+					.orElse(driverDisplayName(number.get()) + " has no qualifying result for " + label + ".");
+		}
+
+		List<RaceResult> order = raceResultRepository.findBySessionKeyOrderByFinishPositionAsc(sessionKey).stream()
+				.filter(r -> r.getFinishPosition() != null && r.getFinishPosition() > 0)
+				.sorted(Comparator.comparing(RaceResult::getFinishPosition))
+				.toList();
+		if (order.isEmpty()) {
+			return "Qualifying results not available for " + label + ".";
+		}
+
+		RaceResult pole = order.getFirst();
+		String poleName = driverDisplayName(pole.getDriverNumber());
+		String top = order.stream()
+				.limit(10)
+				.map(r -> "P" + r.getFinishPosition() + " " + driverLabel(r.getDriverNumber()))
+				.collect(Collectors.joining(" · "));
+		return String.format(Locale.US,
+				"Pole at %s: %s (P1). Top 10: %s.",
+				label, poleName, top);
+	}
+
 	/** One-line race winner for Oracle answers (not the full session brief). */
 	public String raceWinner() {
 		ensureRaceResultsLoaded();
 		int sessionKey = activeSessionKey();
+		SessionContext.ActiveSession active = SessionContext.get();
+		boolean qualifying = active != null && active.sessionName() != null
+				&& active.sessionName().toLowerCase(Locale.ROOT).contains("qualifying");
 		return raceResultRepository.findFirstBySessionKeyAndFinishPosition(sessionKey, 1)
 				.map(r -> {
 					String name = driverDisplayName(r.getDriverNumber());
+					if (qualifying) {
+						return String.format(Locale.US, "%s took pole at %s.", name, activeSessionLabel());
+					}
 					int pts = nzInt(r.getPoints());
 					return String.format(Locale.US,
 							"%s won %s (P1%s).",
@@ -130,18 +182,95 @@ public class TelemetryQueryService {
 							activeSessionLabel(),
 							pts > 0 ? ", " + pts + " pts" : "");
 				})
-				.orElse("Winner unknown for " + activeSessionLabel() + ".");
+				.orElse((qualifying ? "Pole" : "Winner") + " unknown for " + activeSessionLabel() + ".");
 	}
 
 	/** Short podium line for Oracle answers. */
 	public String podiumSummary() {
-		ensureRaceResultsLoaded();
-		int sessionKey = activeSessionKey();
-		String podium = formatPodium(sessionKey);
-		if (podium.startsWith("not loaded")) {
+		PodiumResponse podium = podiumResponse();
+		if (podium.entries().isEmpty()) {
 			return "Podium not available for " + activeSessionLabel() + ".";
 		}
-		return "Podium at " + activeSessionLabel() + ": " + podium + ".";
+		String line = podium.entries().stream()
+				.map(e -> "P" + e.position() + " " + e.broadcastName())
+				.collect(Collectors.joining(" · "));
+		return "Podium at " + podium.label() + ": " + line + ".";
+	}
+
+	/** Structured podium for SSE / UI (broadcast names + headshots). */
+	public PodiumResponse podiumResponse() {
+		ensureRaceResultsLoaded();
+		refreshDriverHeadshots();
+
+		int sessionKey = activeSessionKey();
+		List<RaceResult> classified = raceResultRepository.findBySessionKeyOrderByFinishPositionAsc(sessionKey).stream()
+				.filter(r -> r.getFinishPosition() != null && r.getFinishPosition() >= 1 && r.getFinishPosition() <= 3)
+				.sorted(Comparator.comparing(RaceResult::getFinishPosition))
+				.toList();
+
+		List<PodiumResponse.PodiumEntry> entries = classified.stream()
+				.map(r -> {
+					Driver driver = driverRepository
+							.findByDriverNumberAndSessionKey(r.getDriverNumber(), sessionKey)
+							.orElse(null);
+					String broadcast = driver != null && driver.getBroadcastName() != null
+							? driver.getBroadcastName()
+							: driverLabel(r.getDriverNumber());
+					String team = driver != null ? driver.getTeamName() : null;
+					String headshot = driver != null ? driver.getHeadshotUrl() : null;
+					return new PodiumResponse.PodiumEntry(
+							r.getFinishPosition(),
+							r.getDriverNumber(),
+							broadcast,
+							team,
+							headshot);
+				})
+				.toList();
+
+		return new PodiumResponse(activeSessionLabel(), entries);
+	}
+
+	@Transactional
+	public void refreshDriverHeadshots() {
+		int sessionKey = activeSessionKey();
+		List<Driver> drivers = driverRepository.findBySessionKey(sessionKey);
+		boolean needsRefresh = drivers.isEmpty()
+				|| drivers.stream().anyMatch(d -> d.getHeadshotUrl() == null || d.getHeadshotUrl().isBlank());
+		if (!needsRefresh) {
+			return;
+		}
+		try {
+			RestClient client = restClientBuilder.build();
+			List<DriverDTO> external = client.get()
+					.uri(openF1Properties.baseUrl() + "/drivers?session_key=" + sessionKey)
+					.retrieve()
+					.body(new ParameterizedTypeReference<>() {
+					});
+			if (external == null || external.isEmpty()) {
+				return;
+			}
+			for (DriverDTO data : external) {
+				if (data.driverNumber() == null) {
+					continue;
+				}
+				Driver driver = driverRepository
+						.findByDriverNumberAndSessionKey(data.driverNumber(), sessionKey)
+						.orElseGet(Driver::new);
+				driver.setBroadcastName(data.broadcastName());
+				driver.setDriverNumber(data.driverNumber());
+				driver.setFirstName(data.firstName());
+				driver.setLastName(data.lastName());
+				driver.setNameAcronym(data.nameAcronym());
+				driver.setTeamName(data.teamName());
+				if (data.headshotUrl() != null && !data.headshotUrl().isBlank()) {
+					driver.setHeadshotUrl(data.headshotUrl());
+				}
+				driver.setSessionKey(sessionKey);
+				driverRepository.save(driver);
+			}
+		} catch (Exception ex) {
+			log.warn("Could not refresh driver headshots for session {}: {}", sessionKey, ex.getMessage());
+		}
 	}
 
 	public String sessionStats() {
@@ -157,9 +286,11 @@ public class TelemetryQueryService {
 				.orElse("Winner unknown — check OpenF1 connectivity or re-run ingestion");
 
 		SessionContext.ActiveSession active = SessionContext.get();
-		String sessionType = active != null && active.sessionType() != null
+		String sessionKind = active != null && active.sessionName() != null
+				? active.sessionName()
+				: (active != null && active.sessionType() != null
 				? active.sessionType()
-				: openF1Properties.sessionType();
+				: openF1Properties.sessionType());
 
 		return String.format(Locale.US,
 				"""
@@ -176,7 +307,7 @@ public class TelemetryQueryService {
 				%s
 				""",
 				activeSessionLabel(),
-				sessionKey, sessionType, drivers, laps,
+				sessionKey, sessionKind, drivers, laps,
 				winner,
 				podium,
 				fastestLap(null),

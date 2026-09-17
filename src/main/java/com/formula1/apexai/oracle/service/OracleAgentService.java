@@ -1,9 +1,12 @@
 package com.formula1.apexai.oracle.service;
 
 import com.formula1.apexai.oracle.tools.RaceEngineerTools;
+import com.formula1.apexai.session.ChampionshipService;
 import com.formula1.apexai.session.RaceSessionService;
 import com.formula1.apexai.session.SessionContext;
+import com.formula1.apexai.session.SessionResolution;
 import com.formula1.apexai.steward.service.StewardArchiveService;
+import com.formula1.apexai.telemetry.dto.PodiumResponse;
 import com.formula1.apexai.telemetry.service.TelemetryQueryService;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -46,6 +49,7 @@ public class OracleAgentService {
 	private final StewardArchiveService stewardArchiveService;
 	private final RaceEngineerTools tools;
 	private final RaceSessionService raceSessionService;
+	private final ChampionshipService championshipService;
 	private final MeterRegistry meterRegistry;
 	private final boolean aiEnabled;
 	private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
@@ -56,6 +60,7 @@ public class OracleAgentService {
 			StewardArchiveService stewardArchiveService,
 			RaceEngineerTools tools,
 			RaceSessionService raceSessionService,
+			ChampionshipService championshipService,
 			MeterRegistry meterRegistry,
 			@Value("${apexai.ai.enabled:false}") boolean aiEnabled) {
 		this.chatClientProvider = chatClientProvider;
@@ -63,6 +68,7 @@ public class OracleAgentService {
 		this.stewardArchiveService = stewardArchiveService;
 		this.tools = tools;
 		this.raceSessionService = raceSessionService;
+		this.championshipService = championshipService;
 		this.meterRegistry = meterRegistry;
 		this.aiEnabled = aiEnabled;
 	}
@@ -74,7 +80,15 @@ public class OracleAgentService {
 		executor.submit(() -> {
 			Timer.Sample sample = Timer.start(meterRegistry);
 			try {
-				SessionContext.ActiveSession session = raceSessionService.resolveFromQuestion(question);
+				SessionResolution resolution = raceSessionService.resolveDetailed(question);
+				if (!resolution.resolved()) {
+					streamText(emitter, resolution.message());
+					emitter.send(SseEmitter.event().name("done").data("[END]"));
+					complete(emitter, completed);
+					return;
+				}
+
+				SessionContext.ActiveSession session = resolution.session();
 				SessionContext.set(session);
 
 				// Load data + notify UI; keep ingest chatter out of the spoken answer.
@@ -89,6 +103,15 @@ public class OracleAgentService {
 				String answer = SPEED_TRACE.matcher(raw).replaceAll("").trim();
 
 				streamText(emitter, answer);
+
+				if (question.toLowerCase(Locale.ROOT).contains("podium")) {
+					PodiumResponse podium = telemetryQueryService.podiumResponse();
+					if (!podium.entries().isEmpty()) {
+						emitter.send(SseEmitter.event()
+								.name("podium")
+								.data(toPodiumJson(podium)));
+					}
+				}
 
 				if (trace != null) {
 					emitter.send(SseEmitter.event()
@@ -141,16 +164,24 @@ public class OracleAgentService {
 	private String fallbackHybrid(String question) {
 		String q = question.toLowerCase(Locale.ROOT);
 		int lap = extractLapNumber(question).orElse(10);
+		boolean wantsChampionship = ChampionshipService.looksLikeChampionshipQuestion(question);
 		boolean wantsTrace = q.contains("speed") || q.contains("trace") || q.contains("telemetry");
 		boolean wantsSteward = q.contains("steward") || q.contains("penalty") || q.contains("fia")
 				|| q.contains("incident") || q.contains("track limit");
+		boolean wantsQualifying = q.contains("qualif") || q.contains("pole")
+				|| q.contains("starting grid") || q.contains("grid position");
 		boolean wantsSector = q.contains("s2") || q.contains("sector 2") || q.contains("sector2")
 				|| q.contains("s1") || q.contains("sector 1") || q.contains("s3") || q.contains("sector 3");
-		boolean wantsWinner = q.contains("who won") || q.contains("winner") || q.contains("who win")
-				|| q.contains("race win");
+		boolean wantsWinner = !wantsChampionship && !wantsQualifying
+				&& (q.contains("who won") || q.contains("winner") || q.contains("who win") || q.contains("race win"));
 		boolean wantsPodium = q.contains("podium");
 		boolean wantsBrief = q.contains("brief") || q.contains("session stats") || q.contains("overview")
-				|| (q.contains("results") && !wantsWinner);
+				|| (q.contains("results") && !wantsWinner && !wantsQualifying);
+
+		if (wantsChampionship) {
+			int year = raceSessionService.extractYear(question).orElse(2025);
+			return championshipService.summarize(year, ChampionshipService.scopeFromQuestion(question));
+		}
 
 		Optional<Integer> driverNumber = resolveDriverForQuestion(question);
 
@@ -163,6 +194,12 @@ public class OracleAgentService {
 				return ready + "\n\nSPEED_TRACE driverNumber=" + car + " lapNumber=" + useLap;
 			}
 			return "Name a driver for the speed trace (e.g. Antonelli lap 3).";
+		}
+
+		if (wantsQualifying) {
+			String driver = driverNumber.map(String::valueOf).orElse(
+					extractDriverHint(question).orElse(null));
+			return tools.queryTelemetry("QUALIFYING", driver, null);
 		}
 
 		if (driverNumber.isPresent() && !wantsSteward && !wantsWinner && !wantsPodium) {
@@ -311,7 +348,25 @@ public class OracleAgentService {
 	}
 
 	private String escapeJson(String value) {
-		return value.replace("\\", "\\\\").replace("\"", "\\\"");
+		return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
+	}
+
+	private String toPodiumJson(PodiumResponse podium) {
+		StringBuilder sb = new StringBuilder();
+		sb.append("{\"label\":\"").append(escapeJson(podium.label())).append("\",\"entries\":[");
+		for (int i = 0; i < podium.entries().size(); i++) {
+			PodiumResponse.PodiumEntry e = podium.entries().get(i);
+			if (i > 0) {
+				sb.append(',');
+			}
+			sb.append("{\"position\":").append(e.position())
+					.append(",\"driverNumber\":").append(e.driverNumber())
+					.append(",\"broadcastName\":\"").append(escapeJson(e.broadcastName())).append('"')
+					.append(",\"teamName\":\"").append(escapeJson(e.teamName())).append('"')
+					.append(",\"headshotUrl\":\"").append(escapeJson(e.headshotUrl())).append("\"}");
+		}
+		sb.append("]}");
+		return sb.toString();
 	}
 
 	private void complete(SseEmitter emitter, AtomicBoolean completed) {

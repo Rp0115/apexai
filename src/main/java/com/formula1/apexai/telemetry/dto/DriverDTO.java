@@ -8,6 +8,7 @@ public record DriverDTO(
 		@JsonProperty("first_name") String firstName,
 		@JsonProperty("last_name") String lastName,
 		@JsonProperty("name_acronym") String nameAcronym,
-		@JsonProperty("team_name") String teamName
+		@JsonProperty("team_name") String teamName,
+		@JsonProperty("headshot_url") String headshotUrl
 ) {
 }

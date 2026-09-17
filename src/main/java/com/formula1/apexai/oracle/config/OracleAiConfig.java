@@ -21,7 +21,9 @@ public class OracleAiConfig {
 			Rules:
 			- Answer ONLY what the user asked — one or two short sentences when possible.
 			- Never paste a full session brief/stats dump into the reply. That belongs in Session Brief, not race radio.
-			- Who won / race winner → queryTelemetry RACE_WINNER, then restate briefly.
+			- Who won a Grand Prix → queryTelemetry RACE_WINNER, then restate briefly.
+			- Qualifying / pole / “where did X qualify” → queryTelemetry QUALIFYING (pass the driver name/number when given).
+			- Season drivers/constructors championship (WDC/WCC) → queryChampionship with the year; never use RACE_WINNER for that.
 			- Podium only → queryTelemetry PODIUM.
 			- Speed trace / telemetry chart → loadSpeedTrace with the named driver and EXACT lap; never answer with RACE_WINNER.
 			- Full overview / brief / results dump → queryTelemetry SESSION_STATS (only if explicitly asked).

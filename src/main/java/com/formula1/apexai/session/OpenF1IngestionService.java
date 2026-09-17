@@ -65,6 +65,7 @@ public class OpenF1IngestionService {
 				driver.setLastName(data.lastName());
 				driver.setNameAcronym(data.nameAcronym());
 				driver.setTeamName(data.teamName());
+				driver.setHeadshotUrl(data.headshotUrl());
 				driver.setSessionKey(sessionKey);
 				driverRepository.save(driver);
 				saved++;
