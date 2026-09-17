@@ -98,20 +98,25 @@ public class OracleAgentService {
 						.data("{\"sessionKey\":" + session.sessionKey()
 								+ ",\"label\":\"" + escapeJson(session.label()) + "\"}"));
 
+				boolean wantsPodiumUi = question.toLowerCase(Locale.ROOT).contains("podium");
+				if (wantsPodiumUi) {
+					try {
+						PodiumResponse podium = telemetryQueryService.podiumResponse();
+						if (!podium.entries().isEmpty()) {
+							emitter.send(SseEmitter.event()
+									.name("podium")
+									.data(toPodiumJson(podium)));
+						}
+					} catch (Exception podiumEx) {
+						log.warn("Podium payload failed: {}", podiumEx.getMessage());
+					}
+				}
+
 				String raw = resolveAnswer(question);
 				Integer[] trace = extractSpeedTrace(raw, question, session.sessionKey());
 				String answer = SPEED_TRACE.matcher(raw).replaceAll("").trim();
 
 				streamText(emitter, answer);
-
-				if (question.toLowerCase(Locale.ROOT).contains("podium")) {
-					PodiumResponse podium = telemetryQueryService.podiumResponse();
-					if (!podium.entries().isEmpty()) {
-						emitter.send(SseEmitter.event()
-								.name("podium")
-								.data(toPodiumJson(podium)));
-					}
-				}
 
 				if (trace != null) {
 					emitter.send(SseEmitter.event()

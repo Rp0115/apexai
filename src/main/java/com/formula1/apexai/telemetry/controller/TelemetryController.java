@@ -3,6 +3,7 @@ package com.formula1.apexai.telemetry.controller;
 import com.formula1.apexai.config.OpenF1Properties;
 import com.formula1.apexai.session.RaceSessionService;
 import com.formula1.apexai.session.SessionContext;
+import com.formula1.apexai.telemetry.dto.PodiumResponse;
 import com.formula1.apexai.telemetry.dto.SpeedTraceResponse;
 import com.formula1.apexai.telemetry.model.Driver;
 import com.formula1.apexai.telemetry.model.Lap;
@@ -78,6 +79,16 @@ public class TelemetryController {
 			return lapRepository.findByDriverNumberAndSessionKeyOrderByLapNumberAsc(driverNumber, key);
 		}
 		return lapRepository.findFastestLaps(key, null).stream().limit(50).toList();
+	}
+
+	@GetMapping("/podium")
+	public PodiumResponse podium(@RequestParam(required = false) Integer sessionKey) {
+		try {
+			bindSession(sessionKey);
+			return telemetryQueryService.podiumResponse();
+		} finally {
+			SessionContext.clear();
+		}
 	}
 
 	@GetMapping("/speed-trace")

@@ -72,6 +72,7 @@ async function askOracle(previous, formData) {
         } else if (eventName === 'podium') {
           try {
             podium = JSON.parse(data.trim())
+            if (previous.onPodium) previous.onPodium(podium)
           } catch {
             podium = null
           }
@@ -96,8 +97,12 @@ async function askOracle(previous, formData) {
 function PodiumStand({ podium }) {
   if (!podium?.entries?.length) return null
 
-  const byPos = Object.fromEntries(podium.entries.map((e) => [e.position, e]))
+  const byPos = Object.fromEntries(
+    podium.entries.map((e) => [Number(e.position), e]),
+  )
   const order = [byPos[2], byPos[1], byPos[3]].filter(Boolean)
+  if (!order.length) return null
+
   const heights = { 1: 'h-36', 2: 'h-28', 3: 'h-24' }
 
   return (
@@ -107,16 +112,20 @@ function PodiumStand({ podium }) {
       <div className="mt-8 flex items-end justify-center gap-3 sm:gap-6">
         {order.map((entry) => (
           <div key={entry.position} className="flex w-28 flex-col items-center sm:w-36">
-            <div className="mb-3 flex h-24 w-24 items-end justify-center overflow-hidden sm:h-28 sm:w-28">
+            <div className="mb-3 flex h-24 w-24 items-end justify-center overflow-hidden bg-[var(--mist)] sm:h-28 sm:w-28">
               {entry.headshotUrl ? (
                 <img
                   src={entry.headshotUrl}
-                  alt={entry.broadcastName}
-                  className="max-h-full max-w-full object-contain"
+                  alt={entry.broadcastName || `P${entry.position}`}
+                  className="max-h-full max-w-full object-contain object-bottom"
                   loading="lazy"
+                  referrerPolicy="no-referrer"
+                  onError={(ev) => {
+                    ev.currentTarget.style.display = 'none'
+                  }}
                 />
               ) : (
-                <div className="flex h-full w-full items-center justify-center bg-[var(--mist)] text-2xl font-bold text-[var(--carbon)]/40">
+                <div className="flex h-full w-full items-center justify-center text-2xl font-bold text-[var(--carbon)]/40">
                   {entry.position}
                 </div>
               )}
@@ -124,12 +133,14 @@ function PodiumStand({ podium }) {
             <p className="display text-center text-xs font-bold uppercase tracking-[0.14em] text-[var(--signal)]">
               P{entry.position}
             </p>
-            <p className="mt-1 text-center text-sm font-semibold text-[var(--ink)]">{entry.broadcastName}</p>
+            <p className="mt-1 text-center text-sm font-semibold text-[var(--ink)]">
+              {entry.broadcastName || `#${entry.driverNumber}`}
+            </p>
             {entry.teamName && (
               <p className="mt-0.5 text-center text-xs text-[var(--carbon)]/60">{entry.teamName}</p>
             )}
             <div
-              className={`mt-3 w-full border border-[var(--line)] bg-[var(--mist)] ${heights[entry.position] || 'h-20'}`}
+              className={`mt-3 w-full border border-[var(--line)] bg-[var(--mist)] ${heights[Number(entry.position)] || 'h-20'}`}
             />
           </div>
         ))}
@@ -216,6 +227,7 @@ export default function App() {
   const [liveText, setLiveText] = useState('')
   const [stats, setStats] = useState('')
   const [activeSession, setActiveSession] = useState(null)
+  const [podium, setPodium] = useState(null)
   const formRef = useRef(null)
 
   const [state, formAction, pending] = useActionState(
@@ -227,6 +239,11 @@ export default function App() {
           onSession: (session) => {
             if (session?.sessionKey) {
               startTransition(() => setActiveSession(session))
+            }
+          },
+          onPodium: (payload) => {
+            if (payload?.entries?.length) {
+              startTransition(() => setPodium(payload))
             }
           },
         },
@@ -242,6 +259,7 @@ export default function App() {
 
   const sessionKey = state.session?.sessionKey ?? activeSession?.sessionKey
   const briefLabel = state.session?.label ?? activeSession?.label
+  const displayPodium = podium || state.podium
 
   useEffect(() => {
     let cancelled = false
@@ -261,11 +279,40 @@ export default function App() {
     }
   }, [sessionKey, state.answer])
 
+  // Reliable podium load — SSE can be dropped by proxies; REST is the source of truth.
+  useEffect(() => {
+    const q = (state.question || '').toLowerCase()
+    if (!sessionKey || !q.includes('podium')) return undefined
+    let cancelled = false
+    async function loadPodium() {
+      try {
+        const res = await fetch(`${API}/api/telemetry/podium?sessionKey=${sessionKey}`)
+        if (!res.ok) return
+        const json = await res.json()
+        if (!cancelled && json?.entries?.length) {
+          setPodium(json)
+        }
+      } catch {
+        // keep any SSE podium we already have
+      }
+    }
+    loadPodium()
+    return () => {
+      cancelled = true
+    }
+  }, [sessionKey, state.question, state.answer])
+
   useEffect(() => {
     if (state.session?.sessionKey) {
       setActiveSession(state.session)
     }
   }, [state.session])
+
+  useEffect(() => {
+    if (state.podium?.entries?.length) {
+      setPodium(state.podium)
+    }
+  }, [state.podium])
 
   useEffect(() => {
     if (!pending && state.answer) {
@@ -280,6 +327,7 @@ export default function App() {
     startTransition(() => {
       setOptimisticAnswer('Connecting race radio…')
       setLiveText('')
+      setPodium(null)
       form.requestSubmit()
     })
   }
@@ -305,6 +353,7 @@ export default function App() {
           ref={formRef}
           action={(formData) => {
             setLiveText('')
+            setPodium(null)
             setOptimisticAnswer('Connecting race radio…')
             return formAction(formData)
           }}
@@ -361,7 +410,7 @@ export default function App() {
           </p>
         )}
 
-        {state.podium && <PodiumStand podium={state.podium} />}
+        {displayPodium && <PodiumStand podium={displayPodium} />}
 
         {state.speedTrace && (
           <SpeedTraceChart
