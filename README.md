@@ -1,13 +1,16 @@
 # ApexAI — The Virtual Race Engineer
 
+**Live app:** [https://apexai-xbu8.onrender.com/](https://apexai-xbu8.onrender.com/)
+
 High-performance F1 analytics over **any OpenF1 race** (defaults to 2023 Japan): natural-language questions over SQL lap timing + steward-archive RAG, streamed as race-radio SSE.
 
 Ask the Oracle — it resolves the race from your prompt, loads OpenF1 data if needed, answers directly over race radio, and updates the Session Brief for the active race.
 
 ## Why I Built This?
 
-As an F1 fan, I am always looking back at past race weekends to analyze driver pace, compare stint strategies, and review historical timing stats. Most official archives provide static results tables, making it difficult to visualize how a previous Grand Prix actually unfolded.
-I built **ApexAI** to turn historical Formula 1 session archives into an interactive analytics tool, allowing users to easily pull speed traces, review past lap times, and query completed races through natural language without combing through raw timing logs.
+As an F1 fan, I am always looking back at past race weekends to analyze driver pace, compare stint strategies, and review historical timing stats. Most official archives provide static results tables, making it difficult to visualize how a previous Grand Prix actually unfolded.  
+I built **ApexAI** to turn historical Formula 1 session archives into an interactive analytics tool, allowing users to easily pull speed traces, review past lap times, and query completed races through natural language without combing through raw timing logs.  
+I believe this could be helpful for people who like to participate in F1 Fantasy!
 
 ## Data source — OpenF1
 
@@ -44,12 +47,38 @@ Tips:
 - Speed traces need a **driver** and ideally a **lap number**; the chart appears under race radio.
 - The full timing dump (winner, podium, fastest lap, sectors, speed trap) lives in **Session Brief**, not in every short answer.
 
-## Architecture
 
+
+## Architecture & tech stack
+
+**Deployed stack**
+
+| Layer | Technology |
+| ----- | ---------- |
+| **Frontend hosting** | [Render.com](https://render.com/) static site — [apexai-xbu8.onrender.com](https://apexai-xbu8.onrender.com/) |
+| **API compute** | AWS **EC2** (Spring Boot / Docker on port 8080) |
+| **Database** | AWS **RDS** PostgreSQL (+ pgvector for AI/RAG) |
+| **Networking** | AWS **VPC** — EC2 and RDS in the same VPC; RDS locked to the EC2 security group |
+| **Telemetry source** | [OpenF1 API](https://openf1.org/) (2023+ sessions) |
+
+```
+Browser → Render (React UI)
+              │  VITE_API_BASE (HTTPS tunnel / API URL)
+              ▼
+         EC2 :8080 (Spring Boot)
+              │  JDBC (private)
+              ▼
+         RDS PostgreSQL (VPC)
+              │
+              ▼
+         OpenF1 API
+```
+
+**Application modules**
 
 | Module                | Role                                                          |
 | --------------------- | ------------------------------------------------------------- |
-| **Gateway (Paddock)** | `/api/`** entry + per-IP rate limit                           |
+| **Gateway (Paddock)** | `/api/**` entry + per-IP rate limit                           |
 | **Telemetry**         | PostgreSQL lap/sector/speed-trace queries (per `session_key`) |
 | **Session**           | Resolves race from the prompt + on-demand OpenF1 ingest       |
 | **Steward**           | Narrative archive + pgvector RAG (when AI enabled)            |
@@ -57,13 +86,19 @@ Tips:
 | **Batch**             | Manual ingest for any session (`/api/batch/ingest`)           |
 
 
+
+
 ## Quick start (local)
+
+
 
 ### 1. Database
 
 ```bash
 docker compose -f compose.yaml up -d
 ```
+
+
 
 ### 2. Backend
 
@@ -109,6 +144,8 @@ Invoke-RestMethod "http://localhost:8080/api/batch/races?year=2023" | Format-Tab
 curl.exe -X POST "http://localhost:8080/api/batch/ingest?year=2023&race=Belgium"
 ```
 
+
+
 ### 4. Frontend
 
 ```bash
@@ -128,6 +165,8 @@ docker compose -f docker-compose.yml up --build
 - UI: [http://localhost:3000](http://localhost:3000)
 - API: [http://localhost:8080](http://localhost:8080)
 
+
+
 ## Key endpoints
 
 - `GET /api/health` — gateway map
@@ -137,6 +176,8 @@ docker compose -f docker-compose.yml up --build
 - `GET /api/telemetry/stats?sessionKey=9173` — session brief summary
 - `GET /api/telemetry/speed-trace?driverNumber=1&lapNumber=10&sessionKey=9173`
 - `GET /actuator/metrics/apexai.ai.latency` — AI latency
+
+
 
 ## AI profile notes
 
